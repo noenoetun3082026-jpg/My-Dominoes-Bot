@@ -8,7 +8,7 @@ game_session = {
     "player_order": [],
     "hands": {},
     "board": [],
-    "stockpile": [],     # မဝေရသေးဘဲ ထပ်ဆွဲရန်ကျန်ရှိသော အတုံးများ
+    "stockpile": [],
     "current_turn": 0,
     "chat_id": None,
     "sticker_mapping": {}
@@ -36,7 +36,7 @@ async def load_sticker_set(context: ContextTypes.DEFAULT_TYPE):
         print(f"❌ Sticker Set ဆွဲယူရာတွင် အမှားရှိသည်: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("မင်္ဂလာပါ! Dominoes Bot (Sticker Mode) မှ ကြိုဆိုပါတယ်။ ဂိမ်းစဖို့ /newgame လို့ ရိုက်ပါ။")
+    await update.message.reply_text("မင်္ဂလာပါ! Dominoes Bot မှ ကြိုဆိုပါတယ်။ ဂိမ်းစဖို့ /newgame လို့ ရိုက်ပါ။")
 
 async def new_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if game_session["active"]:
@@ -55,7 +55,7 @@ async def new_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     game_session["chat_id"] = update.effective_chat.id
 
     await update.message.reply_text(
-        "🎲 Dominoes ဂိမ်းအခန်း စတင်လိုက်ပါပြီ!\n"
+        "🎲 Dominoes (UNO Style) ဂိမ်းအခန်း စတင်လိုက်ပါပြီ!\n"
         "ကစားချင်သူများက /join လို့ ရိုက်ပြီး ဝင်ရောက်ပါ။\n"
         "အားလုံးဝင်ပြီးရင် /startgame လို့ ရိုက်ပါ။"
     )
@@ -92,35 +92,26 @@ async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for player_id in game_session["player_order"]:
         game_session["hands"][player_id] = [dominoes.pop() for _ in range(7)]
     
-    # ကျန်ရှိသော အတုံးများကို stockpile (ဆွဲရန်ပုံ) အဖြစ် သိမ်းမည်
     game_session["stockpile"] = dominoes
 
+    await update.message.reply_text("🎮 ဂိမ်းစတင်ပါပြီ! ပထမဦးဆုံး အလှည့်ကို စတင်ပါတော့မည်။")
     await send_turn_message(context)
 
 async def send_turn_message(context: ContextTypes.DEFAULT_TYPE):
     current_player_id = game_session["player_order"][game_session["current_turn"]]
     current_player_name = game_session["players"][current_player_id]
 
-    board = game_session["board"]
-    if not board:
-        board_str = "📭 ဘုတ်ပေါ်တွင် အတုံးမရှိသေးပါ (မည်သည့်တုံးမဆို ချနိုင်သည်)"
-    else:
-        board_str = f"[{board[0][0]}|{board[0][1]}] ... [{board[-1][0]}|{board[-1][1]}]"
-
+    # UNO Bot လိုမျိုး Next player ပုံစံ ပို့ပေးခြင်း
     keyboard = [
         [InlineKeyboardButton("Make your choice!", switch_inline_query_current_chat="")],
         [
-            InlineKeyboardButton("📥 Draw (အတုံးဆွဲရန်)", callback_data="draw_tile"),
-            InlineKeyboardButton("⏭ Pass (အလှည့်ကျော်ရန်)", callback_data="pass_turn")
+            InlineKeyboardButton("📥 Draw card", callback_data="draw_tile"),
+            InlineKeyboardButton("⏭ Pass", callback_data="pass_turn")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    text = (
-        f"📌 **ဘုတ်အစွန်းများ:** {board_str}\n\n"
-        f"👤 ယခုအလှည့်: **{current_player_name}**\n"
-        f"👇 အတုံးရွေးချယ်ရန် သို့မဟုတ် ဆွဲရန် အောက်ပါခလုတ်များကို နှိပ်ပါ!"
-    )
+    text = f"Next player: **{current_player_name}**"
 
     await context.bot.send_message(
         chat_id=game_session["chat_id"],
@@ -155,6 +146,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for idx, d in enumerate(hand):
         if d in game_session["sticker_mapping"]:
             sticker_id = game_session["sticker_mapping"][d]
+            # Telegram တွင် စတစ်ကာပုံစံ အမှန်တကယ်ပေါ်စေရန် CachedSticker ကိုသုံးသည်
             results.append(
                 InlineQueryResultCachedSticker(
                     id=str(idx),
@@ -185,7 +177,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_idx = game_session["current_turn"]
 
     if game_session["player_order"][current_idx] != user_id:
-        await query.edit_message_text("⚠️ ဤသူ့အလှည့် မဟုတ်သေးပါ။")
         return
 
     action = query.data
@@ -197,21 +188,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             game_session["hands"][user_id].append(new_tile)
             await context.bot.send_message(
                 chat_id=game_session["chat_id"],
-                text=f"📥 **{current_player_name}** သည် အတုံးတစ်တုံး ထပ်ဆွဲလိုက်ပါသည်။",
-                parse_mode="Markdown"
+                text=f"Drawing 1 card"
             )
             await send_turn_message(context)
         else:
             await context.bot.send_message(
                 chat_id=game_session["chat_id"],
-                text=f"⚠️ ဆွဲစရာ အတုံး မကျန်တော့ပါ။ အလှည့်ကျော်ရန် Pass ကိုနှိပ်ပါ။"
+                text=f"⚠️ ဆွဲစရာ အတုံး မကျန်တော့ပါ။ Pass ကို နှိပ်ပါ။"
             )
 
     elif action == "pass_turn":
         await context.bot.send_message(
             chat_id=game_session["chat_id"],
-            text=f"⏭ **{current_player_name}** သည် အလှည့်ကို ကျော်လိုက်ပါသည်။",
-            parse_mode="Markdown"
+            text=f"Pass"
         )
         game_session["current_turn"] = (current_idx + 1) % len(game_session["player_order"])
         await send_turn_message(context)
@@ -263,12 +252,12 @@ async def handle_played_domino(update: Update, context: ContextTypes.DEFAULT_TYP
             board.append((chosen_piece[1], chosen_piece[0]))
             hand.pop(idx)
         else:
-            await update.message.reply_text(f"❌ ဤအတုံးသည် ဘုတ်အစွန်းများနှင့် မကိုက်ညီပါ။ အခြားတုံးရွေးပါ (သို့မဟုတ် Draw/Pass ကိုသုံးပါ)။")
+            await update.message.reply_text(f"❌ ဤအတုံးကို ဆက်၍ မရပါ။")
             return
 
     player_name = game_session["players"][user_id]
-    await update.message.reply_text(f"🎴 {player_name} ချလိုက်သော အတုံး:")
 
+    # စတစ်ကာကို ချလိုက်သည့်အခါ တိုက်ရိုက် ပို့ပေးမည်
     if chosen_piece in game_session["sticker_mapping"]:
         await context.bot.send_sticker(
             chat_id=game_session["chat_id"],
