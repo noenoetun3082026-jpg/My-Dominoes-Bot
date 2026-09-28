@@ -1,6 +1,6 @@
 import random
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
-from telegram.ext import ApplicationBuilder, CommandHandler, InlineQueryHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, InlineQueryHandler, ContextTypes
 
 game_session = {
     "active": False,
@@ -75,7 +75,6 @@ async def send_turn_message(context: ContextTypes.DEFAULT_TYPE):
     current_player_id = game_session["player_order"][game_session["current_turn"]]
     current_player_name = game_session["players"][current_player_id]
 
-    # "Make your choice!" ခလုတ်ကို ဖန်တီးခြင်း (Inline Query ဖြင့် ချိတ်ဆက်ထားသည်)
     keyboard = [
         [InlineKeyboardButton("Make your choice!", switch_inline_query_current_chat="")]
     ]
@@ -98,6 +97,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
 
     if not game_session["active"] or user_id not in game_session["hands"]:
+        await query.answer([], cache_time=0)
         return
 
     current_idx = game_session["current_turn"]
