@@ -1,4 +1,4 @@
-import os
+False os
 import json
 import random
 import asyncio
@@ -67,17 +67,21 @@ def create_dominoes():
             dominoes.append((i, j))
 
     return dominoes
-    async def is_bot_admin(context, chat_id):
+
+
+async def is_bot_admin(context, chat_id):
     try:
         me = await context.bot.get_me()
+
         member = await context.bot.get_chat_member(
             chat_id,
             me.id
         )
+
         return member.status == "administrator"
+
     except:
         return False
-
 
 async def remember_group(chat, context):
     if chat.type not in ["group", "supergroup"]:
