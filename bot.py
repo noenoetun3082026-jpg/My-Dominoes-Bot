@@ -1,6 +1,30 @@
+import os
+import json
 import random
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InlineQueryResultCachedSticker, InputTextMessageContent
-from telegram.ext import ApplicationBuilder, CommandHandler, InlineQueryHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+import asyncio
+
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InlineQueryResultArticle,
+    InlineQueryResultCachedSticker,
+    InputTextMessageContent
+)
+
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    InlineQueryHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ChatMemberHandler,
+    filters,
+    ContextTypes
+)
+
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+GROUPS_FILE = "groups.json"
 
 game_session = {
     "active": False,
@@ -14,36 +38,134 @@ game_session = {
     "sticker_mapping": {}
 }
 
+def load_groups():
+    if not os.path.exists(GROUPS_FILE):
+        return {}
+
+    try:
+        with open(GROUPS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_groups():
+    with open(GROUPS_FILE, "w", encoding="utf-8") as f:
+        json.dump(
+            GROUPS,
+            f,
+            ensure_ascii=False,
+            indent=2
+        )
+
+GROUPS = load_groups()
+
 def create_dominoes():
     dominoes = []
+
     for i in range(7):
         for j in range(i, 7):
             dominoes.append((i, j))
+
     return dominoes
-
-async def load_sticker_set(context: ContextTypes.DEFAULT_TYPE):
+    async def is_bot_admin(context, chat_id):
     try:
-        sticker_set = await context.bot.get_sticker_set("DominoSO")
-        stickers = sticker_set.stickers
-        dominoes = create_dominoes()
-        
-        game_session["sticker_mapping"] = {}
-        for idx, domino in enumerate(dominoes):
-            if idx < len(stickers):
-                game_session["sticker_mapping"][domino] = stickers[idx].file_id
-        print("✅ Sticker Set အောင်မြင်စွာ ချိတ်ဆက်ပြီးပါပြီ။")
-    except Exception as e:
-        print(f"❌ Sticker Set ဆွဲယူရာတွင် အမှားရှိသည်: {e}")
+        me = await context.bot.get_me()
+        member = await context.bot.get_chat_member(
+            chat_id,
+            me.id
+        )
+        return member.status == "administrator"
+    except:
+        return False
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("မင်္ဂလာပါ! Dominoes Bot မှ ကြိုဆိုပါတယ်။ ဂိမ်းစဖို့ /newgame လို့ ရိုက်ပါ။")
 
-async def new_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if game_session["active"]:
-        await update.message.reply_text("⚠️ ဂိမ်းတစ်ခု လက်ရှိစတင်နေပါပြီ။ /join ဖြင့် ဝင်ရောက်ပါ။")
+async def remember_group(chat, context):
+    if chat.type not in ["group", "supergroup"]:
+        return False
+
+    if not await is_bot_admin(context, chat.id):
+        return False
+
+    GROUPS[str(chat.id)] = {
+        "id": chat.id,
+        "title": chat.title or "Unknown",
+        "username": chat.username or ""
+    }
+
+    save_groups()
+
+    print(
+        "GROUP SAVED:",
+        chat.title,
+        chat.id
+    )
+
+    return True
+
+
+async def bot_status_changed(update, context):
+    if not update.my_chat_member:
         return
 
-    await load_sticker_set(context)
+    chat = update.my_chat_member.chat
+
+    if chat.type not in ["group", "supergroup"]:
+        return
+
+    status = update.my_chat_member.new_chat_member.status
+
+    if status == "administrator":
+
+        saved = await remember_group(
+            chat,
+            context
+        )
+
+        if saved:
+            try:
+                await context.bot.send_message(
+                    chat.id,
+                    "ဒီ GP ကို မှတ်ထားပါပြီ။"
+                )
+            except:
+                pass
+
+    elif status in ["left", "kicked"]:
+
+        gid = str(chat.id)
+
+        if gid in GROUPS:
+            del GROUPS[gid]
+            save_groups()
+
+
+async def start(update, context):
+    await remember_group(
+        update.effective_chat,
+        context
+    )
+
+    await update.message.reply_text(
+        "မင်္ဂလာပါ!\n"
+        "Dominoes Bot မှ ကြိုဆိုပါတယ်။\n\n"
+        "/newgame - ဂိမ်းစရန်\n"
+        "/groups - GP များကြည့်ရန်\n"
+        "/broadcast စာ - GP အားလုံးကို ပို့ရန်"
+    )
+
+
+async def new_game(update, context):
+
+    await remember_group(
+        update.effective_chat,
+        context
+    )
+
+    if game_session["active"]:
+        await update.message.reply_text(
+            "ဂိမ်းတစ်ခု ရှိနေပါပြီ။"
+        )
+        return
 
     game_session["active"] = True
     game_session["players"] = {}
@@ -52,240 +174,435 @@ async def new_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     game_session["board"] = []
     game_session["stockpile"] = []
     game_session["current_turn"] = 0
-    game_session["chat_id"] = update.effective_chat.id
-
-    await update.message.reply_text(
-        "🎲 Dominoes (UNO Style) ဂိမ်းအခန်း စတင်လိုက်ပါပြီ!\n"
-        "ကစားချင်သူများက /join လို့ ရိုက်ပြီး ဝင်ရောက်ပါ။\n"
-        "အားလုံးဝင်ပြီးရင် /startgame လို့ ရိုက်ပါ။"
+    game_session["chat_id"] = (
+        update.effective_chat.id
     )
 
-async def join_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Dominoes ဂိမ်းစပါပြီ!\n"
+        "/join နဲ့ ဝင်ပါ။\n"
+        "/startgame နဲ့ စပါ။"
+)
+    async def join_game(update, context):
     if not game_session["active"]:
-        await update.message.reply_text("❌ လက်ရှိ ဖွင့်ထားသော ဂိမ်းမရှိပါ။")
+        await update.message.reply_text(
+            "ဂိမ်းမရှိသေးပါ။"
+        )
         return
 
     user = update.effective_user
+
     if user.id in game_session["players"]:
-        await update.message.reply_text(f"{user.first_name}, သင် ဝင်ထားပြီးသား ဖြစ်ပါတယ်။")
+        await update.message.reply_text(
+            "ဝင်ထားပြီးသားပါ။"
+        )
         return
 
-    game_session["players"][user.id] = user.first_name
-    game_session["player_order"].append(user.id)
-    await update.message.reply_text(f"✅ {user.first_name} ဂိမ်းထဲသို့ ဝင်ရောက်လာပါပြီ!")
+    game_session["players"][user.id] = (
+        user.first_name
+    )
 
-async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    game_session["player_order"].append(
+        user.id
+    )
+
+    await update.message.reply_text(
+        f"{user.first_name} ဝင်လာပါပြီ။"
+    )
+
+
+async def start_game(update, context):
     if not game_session["active"]:
-        await update.message.reply_text("❌ ဂိမ်းမစရသေးပါ။")
+        await update.message.reply_text(
+            "ဂိမ်းမစရသေးပါ။"
+        )
         return
 
-    if len(game_session["player_order"]) < 1:
-        await update.message.reply_text("⚠️ ကစားသမား အနည်းဆုံး ၁ ဦး လိုအပ်ပါသည်။")
+    if not game_session["player_order"]:
+        await update.message.reply_text(
+            "ကစားသမားမရှိသေးပါ။"
+        )
         return
 
-    dominoes = create_dominoes()
-    random.shuffle(dominoes)
+    tiles = create_dominoes()
+    random.shuffle(tiles)
 
     game_session["board"] = []
     game_session["current_turn"] = 0
+    game_session["hands"] = {}
 
-    for player_id in game_session["player_order"]:
-        game_session["hands"][player_id] = [dominoes.pop() for _ in range(7)]
-    
-    game_session["stockpile"] = dominoes
+    players = game_session["player_order"]
 
-    await update.message.reply_text("🎮 ဂိမ်းစတင်ပါပြီ! ပထမဦးဆုံး အလှည့်ကို စတင်ပါတော့မည်။")
-    await send_turn_message(context)
+    if len(players) * 7 > len(tiles):
+        await update.message.reply_text(
+            "ကစားသမားများလွန်းပါတယ်။"
+        )
+        return
 
-async def send_turn_message(context: ContextTypes.DEFAULT_TYPE):
-    current_player_id = game_session["player_order"][game_session["current_turn"]]
-    current_player_name = game_session["players"][current_player_id]
-
-    # UNO Bot လိုမျိုး Next player ပုံစံ ပို့ပေးခြင်း
-    keyboard = [
-        [InlineKeyboardButton("Make your choice!", switch_inline_query_current_chat="")],
-        [
-            InlineKeyboardButton("📥 Draw card", callback_data="draw_tile"),
-            InlineKeyboardButton("⏭ Pass", callback_data="pass_turn")
+    for uid in players:
+        game_session["hands"][uid] = [
+            tiles.pop()
+            for _ in range(7)
         ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
 
-    text = f"Next player: **{current_player_name}**"
+    game_session["stockpile"] = tiles
 
-    await context.bot.send_message(
-        chat_id=game_session["chat_id"],
-        text=text,
-        reply_markup=reply_markup,
-        parse_mode="Markdown"
+    await update.message.reply_text(
+        "Dominoes ဂိမ်း စပါပြီ!"
     )
 
-async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.inline_query
-    user_id = query.from_user.id
+    await send_turn_message(context)
 
-    if not game_session["active"] or user_id not in game_session["hands"]:
+
+async def send_turn_message(context):
+    if not game_session["player_order"]:
+        return
+
+    index = game_session["current_turn"]
+    uid = game_session["player_order"][index]
+    name = game_session["players"][uid]
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "Make your choice!",
+                switch_inline_query_current_chat=""
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "Draw",
+                callback_data="draw_tile"
+            ),
+            InlineKeyboardButton(
+                "Pass",
+                callback_data="pass_turn"
+            )
+        ]
+    ]
+
+    await context.bot.send_message(
+        game_session["chat_id"],
+        f"Next player: {name}",
+        reply_markup=InlineKeyboardMarkup(
+            keyboard
+        )
+    )
+
+
+async def load_sticker_set(context):
+    try:
+        stickers = (
+            await context.bot
+            .get_sticker_set("DominoSO")
+        ).stickers
+
+        dominoes = create_dominoes()
+
+        game_session["sticker_mapping"] = {}
+
+        for i, domino in enumerate(dominoes):
+            if i < len(stickers):
+                game_session[
+                    "sticker_mapping"
+                ][domino] = stickers[i].file_id
+
+    except Exception as e:
+        print("STICKER ERROR:", e)
+        async def inline_query(update, context):
+    query = update.inline_query
+    uid = query.from_user.id
+
+    if not game_session["active"]:
         await query.answer([], cache_time=0)
         return
 
-    current_idx = game_session["current_turn"]
-    if game_session["player_order"][current_idx] != user_id:
-        results = [
-            InlineQueryResultArticle(
-                id="not_your_turn",
-                title="⚠️ သင့်အလှည့် မဟုတ်သေးပါ!",
-                input_message_content=InputTextMessageContent("⚠️ ယခု သင့်အလှည့် မဟုတ်သေးပါ။")
-            )
-        ]
-        await query.answer(results, cache_time=0)
+    if uid not in game_session["hands"]:
+        await query.answer([], cache_time=0)
         return
 
-    hand = game_session["hands"][user_id]
-    results = []
+    turn = game_session["current_turn"]
 
-    for idx, d in enumerate(hand):
-        if d in game_session["sticker_mapping"]:
-            sticker_id = game_session["sticker_mapping"][d]
-            # Telegram တွင် စတစ်ကာပုံစံ အမှန်တကယ်ပေါ်စေရန် CachedSticker ကိုသုံးသည်
+    if game_session["player_order"][turn] != uid:
+        await query.answer([], cache_time=0)
+        return
+
+    results = []
+    hand = game_session["hands"][uid]
+
+    for i, tile in enumerate(hand):
+        text = f"PLAY_{uid}_{i}"
+
+        if tile in game_session["sticker_mapping"]:
             results.append(
                 InlineQueryResultCachedSticker(
-                    id=str(idx),
-                    sticker_file_id=sticker_id,
-                    input_message_content=InputTextMessageContent(f"PLAY_{user_id}_{idx}")
+                    id=str(i),
+                    sticker_file_id=game_session[
+                        "sticker_mapping"
+                    ][tile],
+                    input_message_content=(
+                        InputTextMessageContent(text)
+                    )
                 )
             )
         else:
             results.append(
                 InlineQueryResultArticle(
-                    id=str(idx),
-                    title=f"Domino [{d[0]}|{d[1]}]",
-                    description="ဤအတုံးကို ချရန် နှိပ်ပါ",
-                    input_message_content=InputTextMessageContent(f"PLAY_{user_id}_{idx}")
+                    id=str(i),
+                    title=f"[{tile[0]}|{tile[1]}]",
+                    input_message_content=(
+                        InputTextMessageContent(text)
+                    )
                 )
             )
 
-    await query.answer(results, cache_time=0)
+    await query.answer(
+        results,
+        cache_time=0
+    )
 
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def handle_callback(update, context):
     query = update.callback_query
     await query.answer()
 
     if not game_session["active"]:
         return
 
-    user_id = query.from_user.id
-    current_idx = game_session["current_turn"]
+    uid = query.from_user.id
+    turn = game_session["current_turn"]
 
-    if game_session["player_order"][current_idx] != user_id:
+    if game_session["player_order"][turn] != uid:
         return
 
-    action = query.data
-    current_player_name = game_session["players"][user_id]
+    if query.data == "draw_tile":
 
-    if action == "draw_tile":
-        if len(game_session["stockpile"]) > 0:
-            new_tile = game_session["stockpile"].pop()
-            game_session["hands"][user_id].append(new_tile)
+        if game_session["stockpile"]:
+            tile = game_session["stockpile"].pop()
+
+            game_session["hands"][uid].append(tile)
+
             await context.bot.send_message(
-                chat_id=game_session["chat_id"],
-                text=f"Drawing 1 card"
+                game_session["chat_id"],
+                "Drawing 1 card"
             )
+
             await send_turn_message(context)
+
         else:
             await context.bot.send_message(
-                chat_id=game_session["chat_id"],
-                text=f"⚠️ ဆွဲစရာ အတုံး မကျန်တော့ပါ။ Pass ကို နှိပ်ပါ။"
+                game_session["chat_id"],
+                "ဆွဲစရာအတုံး မကျန်တော့ပါ။"
             )
 
-    elif action == "pass_turn":
-        await context.bot.send_message(
-            chat_id=game_session["chat_id"],
-            text=f"Pass"
-        )
-        game_session["current_turn"] = (current_idx + 1) % len(game_session["player_order"])
+    elif query.data == "pass_turn":
+
+        game_session["current_turn"] = (
+            turn + 1
+        ) % len(game_session["player_order"])
+
         await send_turn_message(context)
 
-async def handle_played_domino(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def play_domino(update, context):
     if not game_session["active"]:
         return
 
-    text = update.message.text
-    if not text or not text.startswith("PLAY_"):
+    if not update.message:
+        return
+
+    text = update.message.text or ""
+
+    if not text.startswith("PLAY_"):
         return
 
     try:
         parts = text.split("_")
-        user_id = int(parts[1])
-        idx = int(parts[2])
-    except Exception:
+        uid = int(parts[1])
+        index = int(parts[2])
+    except:
         return
 
-    current_idx = game_session["current_turn"]
-    if game_session["player_order"][current_idx] != user_id:
-        await update.message.reply_text("⚠️ ဤသူ့အလှည့် မဟုတ်သေးပါ!")
+    turn = game_session["current_turn"]
+
+    if game_session["player_order"][turn] != uid:
         return
 
-    hand = game_session["hands"][user_id]
-    if idx >= len(hand):
+    hand = game_session["hands"][uid]
+
+    if index >= len(hand):
         return
 
-    chosen_piece = hand[idx]
+    tile = hand[index]
     board = game_session["board"]
 
     if not board:
-        board.append(chosen_piece)
-        hand.pop(idx)
-    else:
-        left_end = board[0][0]
-        right_end = board[-1][1]
+        board.append(tile)
+        hand.pop(index)
 
-        if chosen_piece[0] == left_end:
-            board.insert(0, (chosen_piece[1], chosen_piece[0]))
-            hand.pop(idx)
-        elif chosen_piece[1] == left_end:
-            board.insert(0, chosen_piece)
-            hand.pop(idx)
-        elif chosen_piece[0] == right_end:
-            board.append(chosen_piece)
-            hand.pop(idx)
-        elif chosen_piece[1] == right_end:
-            board.append((chosen_piece[1], chosen_piece[0]))
-            hand.pop(idx)
+    else:
+        left = board[0][0]
+        right = board[-1][1]
+
+        if tile[0] == left:
+            board.insert(0, (tile[1], tile[0]))
+            hand.pop(index)
+
+        elif tile[1] == left:
+            board.insert(0, tile)
+            hand.pop(index)
+
+        elif tile[0] == right:
+            board.append(tile)
+            hand.pop(index)
+
+        elif tile[1] == right:
+            board.append((tile[1], tile[0]))
+            hand.pop(index)
+
         else:
-            await update.message.reply_text(f"❌ ဤအတုံးကို ဆက်၍ မရပါ။")
+            await update.message.reply_text(
+                "ဒီအတုံးကို ချလို့မရပါ။"
+            )
             return
 
-    player_name = game_session["players"][user_id]
-
-    # စတစ်ကာကို ချလိုက်သည့်အခါ တိုက်ရိုက် ပို့ပေးမည်
-    if chosen_piece in game_session["sticker_mapping"]:
+    if tile in game_session["sticker_mapping"]:
         await context.bot.send_sticker(
-            chat_id=game_session["chat_id"],
-            sticker=game_session["sticker_mapping"][chosen_piece]
+            game_session["chat_id"],
+            game_session["sticker_mapping"][tile]
         )
-    else:
-        await update.message.reply_text(f"[{chosen_piece[0]}|{chosen_piece[1]}]")
 
-    if len(hand) == 0:
-        await update.message.reply_text(f"🎉 ဂိမ်းပြီးဆုံးပါပြီ! **{player_name}** က အနိုင်ရသွားပါပြီ။ 🏆", parse_mode="Markdown")
+    if not hand:
+        name = game_session["players"][uid]
+
+        await update.message.reply_text(
+            f"{name} အနိုင်ရပါပြီ!"
+        )
+
         game_session["active"] = False
         return
 
-    game_session["current_turn"] = (current_idx + 1) % len(game_session["player_order"])
+    game_session["current_turn"] = (
+        turn + 1
+    ) % len(game_session["player_order"])
+
     await send_turn_message(context)
 
-if __name__ == '__main__':
-    token = "8803637837:AAFtInGXvW6wUiteoWrvsizj22oshIPTVoQ"
 
-    app = ApplicationBuilder().token(token).build()
+async def groups(update, context):
+    if not GROUPS:
+        await update.message.reply_text(
+            "မှတ်ထားတဲ့ GP မရှိသေးပါ။"
+        )
+        return
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("newgame", new_game))
-    app.add_handler(CommandHandler("join", join_game))
-    app.add_handler(CommandHandler("startgame", start_game))
-    app.add_handler(InlineQueryHandler(inline_query))
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_played_domino))
+    text = "မှတ်ထားတဲ့ GP များ\n\n"
 
-    print("Bot အလုပ်လုပ်နေပါပြီ ခင်ဗျာ...")
-    app.run_polling()
+    for i, group in enumerate(
+        GROUPS.values(),
+        1
+    ):
+        text += (
+            f"{i}. {group['title']}\n"
+            f"ID: {group['id']}\n\n"
+        )
+
+    await update.message.reply_text(text)
+
+
+async def broadcast(update, context):
+    if not context.args:
+        await update.message.reply_text(
+            "/broadcast စာ"
+        )
+        return
+
+    msg = " ".join(context.args)
+
+    ok = 0
+    fail = 0
+
+    for group in list(GROUPS.values()):
+        try:
+            await context.bot.send_message(
+                group["id"],
+                msg
+            )
+            ok += 1
+            await asyncio.sleep(0.5)
+        except:
+            fail += 1
+
+    await update.message.reply_text(
+        f"ပို့ပြီးပါပြီ။\n"
+        f"အောင်မြင်: {ok}\n"
+        f"မအောင်မြင်: {fail}"
+    )
+
+
+def main():
+    if not BOT_TOKEN:
+        print("BOT_TOKEN မရှိပါ။")
+        return
+
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+
+    app.add_handler(
+        CommandHandler("start", start)
+    )
+
+    app.add_handler(
+        CommandHandler("newgame", new_game)
+    )
+
+    app.add_handler(
+        CommandHandler("join", join_game)
+    )
+
+    app.add_handler(
+        CommandHandler("startgame", start_game)
+    )
+
+    app.add_handler(
+        CommandHandler("groups", groups)
+    )
+
+    app.add_handler(
+        CommandHandler("broadcast", broadcast)
+    )
+
+    app.add_handler(
+        ChatMemberHandler(
+            bot_status_changed,
+            ChatMemberHandler.MY_CHAT_MEMBER
+        )
+    )
+
+    app.add_handler(
+        InlineQueryHandler(inline_query)
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(handle_callback)
+    )
+
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            play_domino
+        )
+    )
+
+    print("Dominoes Bot Running...")
+
+    app.run_polling(
+        drop_pending_updates=True
+    )
+
+
+if __name__ == "__main__":
+    main()
