@@ -1,6 +1,6 @@
 import random
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InlineQueryResultCachedSticker, InputTextMessageContent
-from telegram.ext import ApplicationBuilder, CommandHandler, InlineQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, InlineQueryHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 game_session = {
     "active": False,
@@ -8,6 +8,7 @@ game_session = {
     "player_order": [],
     "hands": {},
     "board": [],
+    "stockpile": [],     # မဝေရသေးဘဲ ထပ်ဆွဲရန်ကျန်ရှိသော အတုံးများ
     "current_turn": 0,
     "chat_id": None,
     "sticker_mapping": {}
@@ -49,6 +50,7 @@ async def new_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     game_session["player_order"] = []
     game_session["hands"] = {}
     game_session["board"] = []
+    game_session["stockpile"] = []
     game_session["current_turn"] = 0
     game_session["chat_id"] = update.effective_chat.id
 
@@ -89,6 +91,9 @@ async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for player_id in game_session["player_order"]:
         game_session["hands"][player_id] = [dominoes.pop() for _ in range(7)]
+    
+    # ကျန်ရှိသော အတုံးများကို stockpile (ဆွဲရန်ပုံ) အဖြစ် သိမ်းမည်
+    game_session["stockpile"] = dominoes
 
     await send_turn_message(context)
 
@@ -96,14 +101,25 @@ async def send_turn_message(context: ContextTypes.DEFAULT_TYPE):
     current_player_id = game_session["player_order"][game_session["current_turn"]]
     current_player_name = game_session["players"][current_player_id]
 
+    board = game_session["board"]
+    if not board:
+        board_str = "📭 ဘုတ်ပေါ်တွင် အတုံးမရှိသေးပါ (မည်သည့်တုံးမဆို ချနိုင်သည်)"
+    else:
+        board_str = f"[{board[0][0]}|{board[0][1]}] ... [{board[-1][0]}|{board[-1][1]}]"
+
     keyboard = [
-        [InlineKeyboardButton("Make your choice!", switch_inline_query_current_chat="")]
+        [InlineKeyboardButton("Make your choice!", switch_inline_query_current_chat="")],
+        [
+            InlineKeyboardButton("📥 Draw (အတုံးဆွဲရန်)", callback_data="draw_tile"),
+            InlineKeyboardButton("⏭ Pass (အလှည့်ကျော်ရန်)", callback_data="pass_turn")
+        ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     text = (
+        f"📌 **ဘုတ်အစွန်းများ:** {board_str}\n\n"
         f"👤 ယခုအလှည့်: **{current_player_name}**\n"
-        f"👇 အတုံးရွေးချယ်ရန် အောက်ပါခလုတ်ကို နှိပ်ပါ!"
+        f"👇 အတုံးရွေးချယ်ရန် သို့မဟုတ် ဆွဲရန် အောက်ပါခလုတ်များကို နှိပ်ပါ!"
     )
 
     await context.bot.send_message(
@@ -158,6 +174,48 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.answer(results, cache_time=0)
 
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if not game_session["active"]:
+        return
+
+    user_id = query.from_user.id
+    current_idx = game_session["current_turn"]
+
+    if game_session["player_order"][current_idx] != user_id:
+        await query.edit_message_text("⚠️ ဤသူ့အလှည့် မဟုတ်သေးပါ။")
+        return
+
+    action = query.data
+    current_player_name = game_session["players"][user_id]
+
+    if action == "draw_tile":
+        if len(game_session["stockpile"]) > 0:
+            new_tile = game_session["stockpile"].pop()
+            game_session["hands"][user_id].append(new_tile)
+            await context.bot.send_message(
+                chat_id=game_session["chat_id"],
+                text=f"📥 **{current_player_name}** သည် အတုံးတစ်တုံး ထပ်ဆွဲလိုက်ပါသည်။",
+                parse_mode="Markdown"
+            )
+            await send_turn_message(context)
+        else:
+            await context.bot.send_message(
+                chat_id=game_session["chat_id"],
+                text=f"⚠️ ဆွဲစရာ အတုံး မကျန်တော့ပါ။ အလှည့်ကျော်ရန် Pass ကိုနှိပ်ပါ။"
+            )
+
+    elif action == "pass_turn":
+        await context.bot.send_message(
+            chat_id=game_session["chat_id"],
+            text=f"⏭ **{current_player_name}** သည် အလှည့်ကို ကျော်လိုက်ပါသည်။",
+            parse_mode="Markdown"
+        )
+        game_session["current_turn"] = (current_idx + 1) % len(game_session["player_order"])
+        await send_turn_message(context)
+
 async def handle_played_domino(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not game_session["active"]:
         return
@@ -205,7 +263,7 @@ async def handle_played_domino(update: Update, context: ContextTypes.DEFAULT_TYP
             board.append((chosen_piece[1], chosen_piece[0]))
             hand.pop(idx)
         else:
-            await update.message.reply_text(f"❌ ဤအတုံးကို ဆက်၍ မရပါ။")
+            await update.message.reply_text(f"❌ ဤအတုံးသည် ဘုတ်အစွန်းများနှင့် မကိုက်ညီပါ။ အခြားတုံးရွေးပါ (သို့မဟုတ် Draw/Pass ကိုသုံးပါ)။")
             return
 
     player_name = game_session["players"][user_id]
@@ -237,6 +295,7 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("join", join_game))
     app.add_handler(CommandHandler("startgame", start_game))
     app.add_handler(InlineQueryHandler(inline_query))
+    app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_played_domino))
 
     print("Bot အလုပ်လုပ်နေပါပြီ ခင်ဗျာ...")
