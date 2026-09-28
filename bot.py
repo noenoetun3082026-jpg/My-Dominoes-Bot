@@ -75,14 +75,21 @@ async def send_turn_message(context: ContextTypes.DEFAULT_TYPE):
     current_player_id = game_session["player_order"][game_session["current_turn"]]
     current_player_name = game_session["players"][current_player_id]
 
+    board = game_session["board"]
+    if not board:
+        board_str = "📭 ဘုတ်ပေါ်တွင် အတုံးမရှိသေးပါ"
+    else:
+        board_str = " ".join([f"[{d[0]}|{d[1]}]" for d in board])
+
     keyboard = [
         [InlineKeyboardButton("Make your choice!", switch_inline_query_current_chat="")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     text = (
+        f"📌 **ဘုတ်အခြေအနေ:** {board_str}\n\n"
         f"First player: **{current_player_name}**\n"
-        f"ယခုအလှည့်ရောက်ပါပြီ။ အတုံးရွေးချယ်ရန် အောက်ပါခလုတ်ကို နှိပ်ပါ!"
+        f"ယခုအလှည့်ရောက်ပါပြီ။ အတုံးရွေးချယ်ရန် အောက်ပါခလုတ်ကို နှိပ်ပါ[cite: 2]!"
     )
 
     await context.bot.send_message(
@@ -121,7 +128,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 id=str(idx),
                 title=f"Domino [{d[0]}|{d[1]}]",
                 description="ဤအတုံးကို ချရန် နှိပ်ပါ",
-                input_message_content=InputTextMessageContent(f"🎴 ချလိုက်သော အတုံး: [{d[0]}|{d[1]}]")
+                input_message_content=InputTextMessageContent(f"play_{user_id}_{idx}")
             )
         )
 
