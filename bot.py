@@ -5,7 +5,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 # ဂိမ်းအချက်အလက်များကို သိမ်းဆည်းရန် ယာယီ Dictionary များ
 game_session = {
     "active": False,
-    "players": [],
+    "players": {},  # user_id: first_name
     "hands": {}
 }
 
@@ -32,7 +32,7 @@ async def new_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     game_session["active"] = True
-    game_session["players"] = []
+    game_session["players"] = {}
     game_session["hands"] = {}
 
     await update.message.reply_text(
@@ -49,13 +49,13 @@ async def join_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = update.effective_user
     if user.id in game_session["players"]:
-        await update.message.reply_text(f"{user.first_name}, 您 သင် ဝင်ထားပြီးသား ဖြစ်ပါတယ်။")
+        await update.message.reply_text(f"{user.first_name}, သင် ဝင်ထားပြီးသား ဖြစ်ပါတယ်။")
         return
 
-    game_session["players"].append(user.id)
+    game_session["players"][user.id] = user.first_name
     await update.message.reply_text(f"✅ {user.first_name} ဂိမ်းထဲသို့ ဝင်ရောက်လာပါပြီ! (စုစုပေါင်း ကစားသမား: {len(game_session['players'])} ဦး)")
 
-# /startgame - ဂိမ်းစတင်ပြီး အတုံးများ ဝေပေးရန်
+# /startgame - ဂိမ်းစတင်ပြီး အတုံးများ ဝေပေးရန် (Private Message ဖြင့် ပို့မည်)
 async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not game_session["active"]:
         await update.message.reply_text("❌ ဂိမ်းမစရသေးပါ။")
@@ -69,16 +69,26 @@ async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dominoes = create_dominoes()
     random.shuffle(dominoes)
 
-    # ကစားသမားတစ်ဦးလျှင် အတုံး ၇ တုံးစီ ဝေပေးခြင်း
-    text = "🎮 ဂိမ်းစတင်ပါပြီ!\n\nကစားသမားများ၏ လက်ထဲပါလာသော အတုံးများ:\n"
-    for player_id in game_session["players"]:
+    # ကစားသမားတစ်ဦးချင်းစီ၏ Chat (Private) သို့ အတုံးများ ပို့ပေးခြင်း
+    for player_id, player_name in game_session["players"].items():
         player_hand = [dominoes.pop() for _ in range(7)]
         game_session["hands"][player_id] = player_hand
         
-        # Chat ထဲသို့ တိုက်ရိုက် ထုတ်ပြပေးခြင်း (Telegram တွင် Private message ပို့ရန်လည်း ပြင်ဆင်နိုင်သည်)
-        text += (f"👤 User ID {player_id}: " + ", ".join([f"[{d[0]}|{d[1]}]" for d in player_hand]) + "\n")
+        hand_str = ", ".join([f"[{d[0]}|{d[1]}]" for d in player_hand])
+        
+        try:
+            # Bot ထံသို့ တစ်ဦးချင်း Private message ပို့ခြင်း
+            await context.bot.send_message(
+                chat_id=player_id,
+                text=f"🎴 သင့်ရဲ့ Dominoes လက်ထဲပါလာသော အတုံးများ:\n{hand_str}"
+            )
+        except Exception as e:
+            # Bot ထံ Private မစတင်ရသေးသူများအတွက်
+            await update.message.reply_text(
+                f"⚠️ {player_name}, ကျေးဇူးပြု၍ Bot ဆီသို့ သွားပြီး Start (သို့မဟုတ်) /start နှိပ်ပေးပါမှ အတုံးများ ပို့ပေးနိုင်မည် ဖြစ်ပါသည်။"
+            )
 
-    await update.message.reply_text(text)
+    await update.message.reply_text("🎮 ဂိမ်းစတင်ပါပြီ! ကစားသမားများ၏ လက်ထဲသို့ အတုံးများကို Private Message ဖြင့် ပို့ပေးလိုက်ပါပြီ။")
 
 if __name__ == '__main__':
     token = "8803637837:AAFtInGXvW6wUiteoWrvsizj22oshIPTVoQ"
