@@ -1,612 +1,393 @@
 import os
+import asyncio
 import json
 import random
-import asyncio
+import hashlib
+import hmac
 
+from aiohttp import web
 from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    InlineQueryResultArticle,
-    InlineQueryResultCachedSticker,
-    InputTextMessageContent
+    WebAppInfo,
 )
+from telegram.ext import Application, CommandHandler, ContextTypes
 
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    InlineQueryHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ChatMemberHandler,
-    filters,
-    ContextTypes
-)
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+WEBAPP_URL = os.environ["WEBAPP_URL"]
+PORT = int(os.environ.get("PORT", "8080"))
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-GROUPS_FILE = "groups.json"
-
-game_session = {
-    "active": False,
-    "players": {},
-    "player_order": [],
-    "hands": {},
-    "board": [],
-    "stockpile": [],
-    "current_turn": 0,
-    "chat_id": None,
-    "sticker_mapping": {}
-}
-
-def load_groups():
-    if not os.path.exists(GROUPS_FILE):
-        return {}
-
-    try:
-        with open(GROUPS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {}
-
-def save_groups():
-    with open(GROUPS_FILE, "w", encoding="utf-8") as f:
-        json.dump(
-            GROUPS,
-            f,
-            ensure_ascii=False,
-            indent=2
-        )
-
-GROUPS = load_groups()
-
-def create_dominoes():
-    dominoes = []
-
-    for i in range(7):
-        for j in range(i, 7):
-            dominoes.append((i, j))
-
-    return dominoes
+games = {}
 
 
-async def is_bot_admin(context, chat_id):
-    try:
-        me = await context.bot.get_me()
-
-        member = await context.bot.get_chat_member(
-            chat_id,
-            me.id
-        )
-
-        return member.status == "administrator"
-
-    except:
-        return False
-
-async def remember_group(chat, context):
-    if chat.type not in ["group", "supergroup"]:
-        return False
-
-    if not await is_bot_admin(context, chat.id):
-        return False
-
-    GROUPS[str(chat.id)] = {
-        "id": chat.id,
-        "title": chat.title or "Unknown",
-        "username": chat.username or ""
-    }
-
-    save_groups()
-
-    print(
-        "GROUP SAVED:",
-        chat.title,
-        chat.id
-    )
-
-    return True
+def make_dominoes():
+    return [[a, b] for a in range(7) for b in range(a, 7)]
 
 
-async def bot_status_changed(update, context):
-    if not update.my_chat_member:
-        return
-
-    chat = update.my_chat_member.chat
-
-    if chat.type not in ["group", "supergroup"]:
-        return
-
-    status = update.my_chat_member.new_chat_member.status
-
-    if status == "administrator":
-
-        saved = await remember_group(
-            chat,
-            context
-        )
-
-        if saved:
-            try:
-                await context.bot.send_message(
-                    chat.id,
-                    "ဒီ GP ကို မှတ်ထားပါပြီ။"
-                )
-            except:
-                pass
-
-    elif status in ["left", "kicked"]:
-
-        gid = str(chat.id)
-
-        if gid in GROUPS:
-            del GROUPS[gid]
-            save_groups()
-
-
-async def start(update, context):
-    await remember_group(
-        update.effective_chat,
-        context
-    )
-
-    await update.message.reply_text(
-        "မင်္ဂလာပါ!\n"
-        "Dominoes Bot မှ ကြိုဆိုပါတယ်။\n\n"
-        "/newgame - ဂိမ်းစရန်\n"
-        "/groups - GP များကြည့်ရန်\n"
-        "/broadcast စာ - GP အားလုံးကို ပို့ရန်"
-    )
-
-
-async def new_game(update, context):
-
-    await remember_group(
-        update.effective_chat,
-        context
-    )
-
-    if game_session["active"]:
-        await update.message.reply_text(
-            "ဂိမ်းတစ်ခု ရှိနေပါပြီ။"
-        )
-        return
-
-    game_session["active"] = True
-    game_session["players"] = {}
-    game_session["player_order"] = []
-    game_session["hands"] = {}
-    game_session["board"] = []
-    game_session["stockpile"] = []
-    game_session["current_turn"] = 0
-    game_session["chat_id"] = (
-        update.effective_chat.id
-    )
-
-    await update.message.reply_text(
-        "Dominoes ဂိမ်းစပါပြီ!\n"
-        "/join နဲ့ ဝင်ပါ။\n"
-        "/startgame နဲ့ စပါ။"
-)
-    async def join_game(update, context):
-    if not game_session["active"]:
-        await update.message.reply_text(
-            "ဂိမ်းမရှိသေးပါ။"
-        )
-        return
-
-    user = update.effective_user
-
-    if user.id in game_session["players"]:
-        await update.message.reply_text(
-            "ဝင်ထားပြီးသားပါ။"
-        )
-        return
-
-    game_session["players"][user.id] = (
-        user.first_name
-    )
-
-    game_session["player_order"].append(
-        user.id
-    )
-
-    await update.message.reply_text(
-        f"{user.first_name} ဝင်လာပါပြီ။"
-    )
-
-
-async def start_game(update, context):
-    if not game_session["active"]:
-        await update.message.reply_text(
-            "ဂိမ်းမစရသေးပါ။"
-        )
-        return
-
-    if not game_session["player_order"]:
-        await update.message.reply_text(
-            "ကစားသမားမရှိသေးပါ။"
-        )
-        return
-
-    tiles = create_dominoes()
+def new_game(chat_id):
+    tiles = make_dominoes()
     random.shuffle(tiles)
 
-    game_session["board"] = []
-    game_session["current_turn"] = 0
-    game_session["hands"] = {}
-
-    players = game_session["player_order"]
-
-    if len(players) * 7 > len(tiles):
-        await update.message.reply_text(
-            "ကစားသမားများလွန်းပါတယ်။"
-        )
-        return
-
-    for uid in players:
-        game_session["hands"][uid] = [
-            tiles.pop()
-            for _ in range(7)
-        ]
-
-    game_session["stockpile"] = tiles
-
-    await update.message.reply_text(
-        "Dominoes ဂိမ်း စပါပြီ!"
-    )
-
-    await send_turn_message(context)
+    return {
+        "chat_id": chat_id,
+        "players": {},
+        "hands": {},
+        "board": [],
+        "turn": None,
+        "started": False,
+    }
 
 
-async def send_turn_message(context):
-    if not game_session["player_order"]:
-        return
+def valid_move(tile, board):
+    if not board:
+        return True
 
-    index = game_session["current_turn"]
-    uid = game_session["player_order"][index]
-    name = game_session["players"][uid]
+    left = board[0][0]
+    right = board[-1][1]
 
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                "Make your choice!",
-                switch_inline_query_current_chat=""
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "Draw",
-                callback_data="draw_tile"
-            ),
-            InlineKeyboardButton(
-                "Pass",
-                callback_data="pass_turn"
-            )
-        ]
-    ]
+    a, b = tile
 
-    await context.bot.send_message(
-        game_session["chat_id"],
-        f"Next player: {name}",
-        reply_markup=InlineKeyboardMarkup(
-            keyboard
-        )
+    return (
+        a in (left, right)
+        or b in (left, right)
     )
 
 
-async def load_sticker_set(context):
+def play_tile(game, user_id, index, side):
+    hand = game["hands"].get(str(user_id), [])
+
+    if index < 0 or index >= len(hand):
+        return False, "Invalid tile"
+
+    tile = hand[index]
+
+    if not valid_move(tile, game["board"]):
+        return False, "ဒီအတုံးကို ချလို့မရပါ"
+
+    a, b = tile
+
+    if not game["board"]:
+        game["board"].append([a, b])
+
+    elif side == "left":
+        target = game["board"][0][0]
+
+        if b == target:
+            tile = [a, b]
+        elif a == target:
+            tile = [b, a]
+        else:
+            return False, "ဘယ်ဘက်မှာ ချလို့မရပါ"
+
+        game["board"].insert(0, tile)
+
+    elif side == "right":
+        target = game["board"][-1][1]
+
+        if a == target:
+            tile = [a, b]
+        elif b == target:
+            tile = [b, a]
+        else:
+            return False, "ညာဘက်မှာ ချလို့မရပါ"
+
+        game["board"].append(tile)
+
+    else:
+        return False, "Invalid side"
+
+    hand.pop(index)
+
+    player_ids = list(game["players"].keys())
+
+    if not hand:
+        game["started"] = False
+
+    else:
+        current = player_ids.index(str(user_id))
+        next_index = (current + 1) % len(player_ids)
+        game["turn"] = player_ids[next_index]
+
+    return True, "OK"
+
+
+def verify_init_data(init_data):
     try:
-        stickers = (
-            await context.bot
-            .get_sticker_set("DominoSO")
-        ).stickers
+        data = dict(
+            item.split("=", 1)
+            for item in init_data.split("&")
+            if "=" in item
+        )
 
-        dominoes = create_dominoes()
+        received_hash = data.pop("hash", None)
 
-        game_session["sticker_mapping"] = {}
+        if not received_hash:
+            return None
 
-        for i, domino in enumerate(dominoes):
-            if i < len(stickers):
-                game_session[
-                    "sticker_mapping"
-                ][domino] = stickers[i].file_id
+        check_string = "\n".join(
+            f"{k}={data[k]}"
+            for k in sorted(data)
+        )
 
-    except Exception as e:
-        print("STICKER ERROR:", e)
-        async def inline_query(update, context):
-    query = update.inline_query
-    uid = query.from_user.id
+        secret_key = hmac.new(
+            b"WebAppData",
+            BOT_TOKEN.encode(),
+            hashlib.sha256,
+        ).digest()
 
-    if not game_session["active"]:
-        await query.answer([], cache_time=0)
-        return
+        calculated = hmac.new(
+            secret_key,
+            check_string.encode(),
+            hashlib.sha256,
+        ).hexdigest()
 
-    if uid not in game_session["hands"]:
-        await query.answer([], cache_time=0)
-        return
+        if not hmac.compare_digest(calculated, received_hash):
+            return None
 
-    turn = game_session["current_turn"]
+        user = json.loads(data.get("user", "{}"))
 
-    if game_session["player_order"][turn] != uid:
-        await query.answer([], cache_time=0)
-        return
+        return user
 
-    results = []
-    hand = game_session["hands"][uid]
-
-    for i, tile in enumerate(hand):
-        text = f"PLAY_{uid}_{i}"
-
-        if tile in game_session["sticker_mapping"]:
-            results.append(
-                InlineQueryResultCachedSticker(
-                    id=str(i),
-                    sticker_file_id=game_session[
-                        "sticker_mapping"
-                    ][tile],
-                    input_message_content=(
-                        InputTextMessageContent(text)
-                    )
-                )
-            )
-        else:
-            results.append(
-                InlineQueryResultArticle(
-                    id=str(i),
-                    title=f"[{tile[0]}|{tile[1]}]",
-                    input_message_content=(
-                        InputTextMessageContent(text)
-                    )
-                )
-            )
-
-    await query.answer(
-        results,
-        cache_time=0
-    )
+    except Exception:
+        return None
 
 
-async def handle_callback(update, context):
-    query = update.callback_query
-    await query.answer()
-
-    if not game_session["active"]:
-        return
-
-    uid = query.from_user.id
-    turn = game_session["current_turn"]
-
-    if game_session["player_order"][turn] != uid:
-        return
-
-    if query.data == "draw_tile":
-
-        if game_session["stockpile"]:
-            tile = game_session["stockpile"].pop()
-
-            game_session["hands"][uid].append(tile)
-
-            await context.bot.send_message(
-                game_session["chat_id"],
-                "Drawing 1 card"
-            )
-
-            await send_turn_message(context)
-
-        else:
-            await context.bot.send_message(
-                game_session["chat_id"],
-                "ဆွဲစရာအတုံး မကျန်တော့ပါ။"
-            )
-
-    elif query.data == "pass_turn":
-
-        game_session["current_turn"] = (
-            turn + 1
-        ) % len(game_session["player_order"])
-
-        await send_turn_message(context)
-
-
-async def play_domino(update, context):
-    if not game_session["active"]:
-        return
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not update.message:
         return
 
-    text = update.message.text or ""
-
-    if not text.startswith("PLAY_"):
-        return
-
-    try:
-        parts = text.split("_")
-        uid = int(parts[1])
-        index = int(parts[2])
-    except:
-        return
-
-    turn = game_session["current_turn"]
-
-    if game_session["player_order"][turn] != uid:
-        return
-
-    hand = game_session["hands"][uid]
-
-    if index >= len(hand):
-        return
-
-    tile = hand[index]
-    board = game_session["board"]
-
-    if not board:
-        board.append(tile)
-        hand.pop(index)
-
-    else:
-        left = board[0][0]
-        right = board[-1][1]
-
-        if tile[0] == left:
-            board.insert(0, (tile[1], tile[0]))
-            hand.pop(index)
-
-        elif tile[1] == left:
-            board.insert(0, tile)
-            hand.pop(index)
-
-        elif tile[0] == right:
-            board.append(tile)
-            hand.pop(index)
-
-        elif tile[1] == right:
-            board.append((tile[1], tile[0]))
-            hand.pop(index)
-
-        else:
-            await update.message.reply_text(
-                "ဒီအတုံးကို ချလို့မရပါ။"
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "🀄 PLAY DOMINOES",
+                web_app=WebAppInfo(url=WEBAPP_URL)
             )
-            return
-
-    if tile in game_session["sticker_mapping"]:
-        await context.bot.send_sticker(
-            game_session["chat_id"],
-            game_session["sticker_mapping"][tile]
-        )
-
-    if not hand:
-        name = game_session["players"][uid]
-
-        await update.message.reply_text(
-            f"{name} အနိုင်ရပါပြီ!"
-        )
-
-        game_session["active"] = False
-        return
-
-    game_session["current_turn"] = (
-        turn + 1
-    ) % len(game_session["player_order"])
-
-    await send_turn_message(context)
-
-
-async def groups(update, context):
-    if not GROUPS:
-        await update.message.reply_text(
-            "မှတ်ထားတဲ့ GP မရှိသေးပါ။"
-        )
-        return
-
-    text = "မှတ်ထားတဲ့ GP များ\n\n"
-
-    for i, group in enumerate(
-        GROUPS.values(),
-        1
-    ):
-        text += (
-            f"{i}. {group['title']}\n"
-            f"ID: {group['id']}\n\n"
-        )
-
-    await update.message.reply_text(text)
-
-
-async def broadcast(update, context):
-    if not context.args:
-        await update.message.reply_text(
-            "/broadcast စာ"
-        )
-        return
-
-    msg = " ".join(context.args)
-
-    ok = 0
-    fail = 0
-
-    for group in list(GROUPS.values()):
-        try:
-            await context.bot.send_message(
-                group["id"],
-                msg
-            )
-            ok += 1
-            await asyncio.sleep(0.5)
-        except:
-            fail += 1
+        ]
+    ])
 
     await update.message.reply_text(
-        f"ပို့ပြီးပါပြီ။\n"
-        f"အောင်မြင်: {ok}\n"
-        f"မအောင်မြင်: {fail}"
+        "🀄 DOMINOES\n\n"
+        "4 Players\n"
+        "UNO လို Web App UI\n\n"
+        "ကိုယ့်အလှည့်ရောက်မှ\n"
+        "Make your choice ကိုနှိပ်ပြီး\n"
+        "ကိုယ့် Domino အတုံးတွေကို ကိုယ်ပဲမြင်ရပါမယ်။",
+        reply_markup=keyboard,
     )
 
 
-def main():
-    if not BOT_TOKEN:
-        print("BOT_TOKEN မရှိပါ။")
-        return
+async def api_join(request):
 
-    app = (
-        ApplicationBuilder()
+    try:
+        body = await request.json()
+
+        chat_id = str(body["chat_id"])
+        init_data = body.get("initData", "")
+
+        user = verify_init_data(init_data)
+
+        if not user:
+            return web.json_response(
+                {"error": "Invalid Telegram user"},
+                status=403,
+            )
+
+        user_id = str(user["id"])
+        name = user.get("first_name", "Player")
+
+        if chat_id not in games:
+            games[chat_id] = new_game(chat_id)
+
+        game = games[chat_id]
+
+        if user_id not in game["players"]:
+
+            if len(game["players"]) >= 4:
+                return web.json_response({
+                    "error": "Game is full"
+                })
+
+            game["players"][user_id] = name
+
+        if len(game["players"]) == 4 and not game["started"]:
+
+            tiles = make_dominoes()
+            random.shuffle(tiles)
+
+            ids = list(game["players"].keys())
+
+            for i, uid in enumerate(ids):
+                game["hands"][uid] = tiles[i * 7:(i + 1) * 7]
+
+            game["turn"] = ids[0]
+            game["started"] = True
+
+        return await game_state(game, user_id)
+
+    except Exception as e:
+        return web.json_response(
+            {"error": str(e)},
+            status=500,
+        )
+
+
+async def api_state(request):
+
+    chat_id = request.query.get("chat_id")
+    init_data = request.query.get("initData", "")
+
+    user = verify_init_data(init_data)
+
+    if not user:
+        return web.json_response(
+            {"error": "Invalid user"},
+            status=403,
+        )
+
+    user_id = str(user["id"])
+
+    game = games.get(chat_id)
+
+    if not game:
+        return web.json_response({
+            "error": "Game not found"
+        })
+
+    return await game_state(game, user_id)
+
+
+async def game_state(game, user_id):
+
+    players = []
+
+    for uid, name in game["players"].items():
+        players.append({
+            "id": uid,
+            "name": name,
+            "turn": uid == game["turn"],
+        })
+
+    return web.json_response({
+        "players": players,
+        "board": game["board"],
+        "myTurn": game["turn"] == user_id,
+        "started": game["started"],
+
+        # ကိုယ့် hand ကို ကိုယ်ပဲရ
+        "hand": (
+            game["hands"].get(user_id, [])
+            if game["turn"] == user_id
+            else []
+        ),
+    })
+
+
+async def api_play(request):
+
+    try:
+        body = await request.json()
+
+        chat_id = str(body["chat_id"])
+        init_data = body.get("initData", "")
+
+        user = verify_init_data(init_data)
+
+        if not user:
+            return web.json_response(
+                {"error": "Invalid user"},
+                status=403,
+            )
+
+        user_id = str(user["id"])
+
+        game = games.get(chat_id)
+
+        if not game:
+            return web.json_response({
+                "error": "Game not found"
+            })
+
+        if game["turn"] != user_id:
+            return web.json_response({
+                "error": "Not your turn"
+            })
+
+        index = int(body["index"])
+        side = body.get("side", "right")
+
+        ok, message = play_tile(
+            game,
+            user_id,
+            index,
+            side,
+        )
+
+        if not ok:
+            return web.json_response({
+                "error": message
+            })
+
+        return await game_state(game, user_id)
+
+    except Exception as e:
+        return web.json_response({
+            "error": str(e)
+        }, status=500)
+
+
+async def index(request):
+    return web.FileResponse("index.html")
+
+
+async def health(request):
+    return web.Response(text="OK")
+
+
+async def main():
+
+    telegram_app = (
+        Application
+        .builder()
         .token(BOT_TOKEN)
         .build()
     )
 
-    app.add_handler(
+    telegram_app.add_handler(
         CommandHandler("start", start)
     )
 
-    app.add_handler(
-        CommandHandler("newgame", new_game)
+    await telegram_app.initialize()
+    await telegram_app.start()
+    await telegram_app.updater.start_polling()
+
+    web_app = web.Application()
+
+    web_app.router.add_get("/", index)
+    web_app.router.add_get("/index.html", index)
+    web_app.router.add_get("/health", health)
+
+    web_app.router.add_post("/api/join", api_join)
+    web_app.router.add_get("/api/state", api_state)
+    web_app.router.add_post("/api/play", api_play)
+
+    runner = web.AppRunner(web_app)
+
+    await runner.setup()
+
+    site = web.TCPSite(
+        runner,
+        "0.0.0.0",
+        PORT,
     )
 
-    app.add_handler(
-        CommandHandler("join", join_game)
-    )
+    await site.start()
 
-    app.add_handler(
-        CommandHandler("startgame", start_game)
-    )
+    print("DOMINOES BOT RUNNING")
 
-    app.add_handler(
-        CommandHandler("groups", groups)
-    )
-
-    app.add_handler(
-        CommandHandler("broadcast", broadcast)
-    )
-
-    app.add_handler(
-        ChatMemberHandler(
-            bot_status_changed,
-            ChatMemberHandler.MY_CHAT_MEMBER
-        )
-    )
-
-    app.add_handler(
-        InlineQueryHandler(inline_query)
-    )
-
-    app.add_handler(
-        CallbackQueryHandler(handle_callback)
-    )
-
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            play_domino
-        )
-    )
-
-    print("Dominoes Bot Running...")
-
-    app.run_polling(
-        drop_pending_updates=True
-    )
+    await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
