@@ -1,10 +1,17 @@
 import os
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes
+
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-
-# Bot username — @ မထည့်ပါနဲ့
 BOT_USERNAME = os.environ["BOT_USERNAME"]
 
 
@@ -13,7 +20,7 @@ async def domino(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
 
-    # Group ထဲကနေ ဖွင့်တဲ့ Direct Mini App link
+    # Main Mini App direct link
     app_url = (
         f"https://t.me/{BOT_USERNAME}"
         f"?startapp=domino"
@@ -23,7 +30,7 @@ async def domino(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [
             InlineKeyboardButton(
                 "🀄 PLAY DOMINOES",
-                url=app_url
+                url=app_url,
             )
         ]
     ])
@@ -36,23 +43,22 @@ async def domino(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Game ထဲဝင်ပါ။\n\n"
         "ကိုယ့်အလှည့်ရောက်မှ "
         "Make your choice ပေါ်ပါမယ်။",
-        reply_markup=keyboard
+        reply_markup=keyboard,
     )
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not update.message:
         return
 
-    # /start domino
-    if context.args and context.args[0] == "domino":
-        await domino(update, context)
-        return
-
     await update.message.reply_text(
         "🀄 DOMINOES\n\n"
-        "Group ထဲမှာ /domino လို့ပို့ပါ။"
+        "Group ထဲမှာ /domino လို့ပို့ပြီး "
+        "Game စနိုင်ပါတယ်။"
     )
 
 
